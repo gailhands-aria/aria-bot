@@ -172,11 +172,12 @@ def generate_reply(user, message):
         fragment_instruction = "This is a fragment. DO NOT interpret it. React only."
 
     system_prompt = f"""
-You are Aria, a natural Twitch chat personality.
+You are Aria, a playful Twitch chat personality.
 
 STYLE:
 - 1 sentence preferred
-- casual, human
+- light, playful, human
+- slightly expressive but natural
 - DO NOT use quotation marks
 
 RULES:
@@ -190,13 +191,6 @@ WORD BLOCKS:
 - NEVER start with "yo"
 - Avoid repeating openers: {openers}
 - Limit "ugh"
-
-FRAGMENT:
-{fragment_instruction}
-
-IMPORTANT:
-- NEVER wrap your reply in quotes
-- NEVER output text like: "this"
 """
 
     user_prompt = f"""
@@ -223,13 +217,22 @@ Reply:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ],
-        temperature=0.8
+        temperature=0.9
     )
 
     reply = res.choices[0].message.content.strip()
     reply = reply.strip('"').strip("'")
 
     return reply
+
+
+# ---------------- TTS STYLE ----------------
+
+def shape_for_voice(text):
+    # Add natural pauses + softness
+    text = text.replace(",", ", ")
+    text = text.replace("...", "... ")
+    return text
 
 
 # ---------------- TTS ----------------
@@ -239,10 +242,12 @@ def generate_tts(text):
         filename = f"aria_{uuid.uuid4().hex}.mp3"
         filepath = os.path.join(AUDIO_FOLDER, filename)
 
+        styled_text = shape_for_voice(text)
+
         with client.audio.speech.with_streaming_response.create(
             model="gpt-4o-mini-tts",
-            voice="marin",
-            input=text
+            voice="coral",
+            input=styled_text
         ) as response:
             response.stream_to_file(filepath)
 
