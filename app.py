@@ -11,532 +11,230 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 USER_MEMORY = {}
 
 MAX_MEMORY_ITEMS = 15
-MAX_RECENT_REPLIES = 6
-MAX_RECENT_TOPICS = 6
-MAX_RELEVANT_MEMORIES_FOR_REPLY = 4
+MAX_RECENT_TURNS = 8
 
+
+# ---------------- UTIL ----------------
 
 def now_iso():
     return datetime.now(timezone.utc).isoformat()
-
-
-def safe_json_loads(text):
-    try:
-        return json.loads(text)
-    except Exception:
-        return None
-
-
-def clean_text(text, limit=240):
-    if not text:
-        return ""
-    text = re.sub(r"\s+", " ", str(text)).strip()
-    text = text.strip(" \n\r\t")
-    return text[:limit]
 
 
 def normalize(text):
     return re.sub(r"\s+", " ", (text or "").lower()).strip()
 
 
-def tokenize(text):
-    words = re.findall(r"[a-zA-Z']+", (text or "").lower())
-    stop_words = {
-        "the", "a", "an", "i", "im", "i'm", "you", "your", "me", "my", "to",
-        "of", "for", "and", "or", "but", "is", "it", "this", "that", "what",
-        "why", "how", "do", "did", "was", "were", "about", "with", "have",
-        "has", "had", "today", "tomorrow", "yesterday", "remember", "earlier",
-        "said", "told"
-    }
-    return [w for w in words if w not in stop_words and len(w) > 2]
+def is_fragment(message):
+    words = message.strip().split()
+    return len(words) <= 3
 
+
+# ---------------- MEMORY ----------------
 
 def get_user_memory(user):
     if user not in USER_MEMORY:
         USER_MEMORY[user] = {
-            "user": user,
-            "seen_count": 0,
             "memory_items": [],
-            "recent_replies": [],
-            "recent_topics": [],
-            "style_profile": {
-                "likes_playful_banter": True,
-                "prefers_gentle_replies": True,
-                "responds_well_to_reassurance": True
-            }
+            "recent_turns": [],
+            "conversation_summary": ""
         }
     return USER_MEMORY[user]
 
 
-def update_recent_topics(memory, topic):
-    if not topic:
-        return
-    if topic in memory["recent_topics"]:
-        memory["recent_topics"].remove(topic)
-    memory["recent_topics"].append(topic)
-    memory["recent_topics"] = memory["recent_topics"][-MAX_RECENT_TOPICS:]
-
-
-def is_duplicate_reply(reply, recent_replies):
-    reply_norm = normalize(reply)
-    recent_norms = {normalize(x) for x in recent_replies}
-    return reply_norm in recent_norms
-
-
-def is_vague_memory_text(text):
-    text = normalize(text)
-    bad_phrases = [
-        "feeling emotional",
-        "feels emotional",
-        "feeling sad",
-        "feels sad",
-        "feeling upset",
-        "feels upset",
-        "feeling low",
-        "feels low",
-        "had a feeling",
-        "is emotional",
-        "is upset",
-        "is sad"
-    ]
-    return any(bp in text for bp in bad_phrases)
-
-
-def store_memory_fact(memory, fact):
+def store_memory(memory, fact):
     if not fact or not fact.get("text"):
         return
 
-    if is_vague_memory_text(fact["text"]):
+    text = normalize(fact["text"])
+
+    # block vague / unsafe memory
+    banned = [
+        "feeling sad", "feels sad", "feeling emotional",
+        "owns a cat", "owns a dog", "likes animals"
+    ]
+
+    if any(b in text for b in banned):
         return
 
-    existing_texts = [normalize(x.get("text", "")) for x in memory["memory_items"]]
-    if normalize(fact["text"]) in existing_texts:
+    existing = [normalize(x["text"]) for x in memory["memory_items"]]
+
+    if text in existing:
         return
 
     memory["memory_items"].append(fact)
-    memory["memory_items"] = sorted(
-        memory["memory_items"],
-        key=lambda x: x.get("importance", 0),
-        reverse=True
-    )[:MAX_MEMORY_ITEMS]
+    memory["memory_items"] = memory["memory_items"][-MAX_MEMORY_ITEMS:]
 
 
-def extract_memory_with_model(user, message):
-    """
-    Strict memory extraction.
-    Only store clear personal facts.
-    """
+# ---------------- MEMORY EXTRACTION ----------------
+
+def extract_memory(user, message):
+    prompt = f"""
+Extract a memory ONLY if this is a CLEAR personal fact.
+
+MESSAGE:
+{message}
+
+RULES:
+- Only store real facts (job, event, situation)
+- DO NOT guess
+- DO NOT infer
+- DO NOT store fragments
+- DO NOT store topics
+
+Return JSON:
+{{
+ "should_store": true/false,
+ "text": "...",
+ "topic": "...",
+ "importance": 0-1
+}}
+"""
+
     try:
-        response = client.chat.completions.create(
+        res = client.chat.completions.create(
             model="gpt-4o-mini",
-            temperature=0.0,
-            response_format={"type": "json_object"},
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Extract memory ONLY if the message clearly contains a personal fact about the user.\n\n"
-                        "VALID examples:\n"
-                        "- i got a new job -> 'got a new job'\n"
-                        "- my dog died -> 'lost their dog'\n"
-                        "- i have an interview tomorrow -> 'has an interview tomorrow'\n"
-                        "- my dog sleeps on my bed -> 'dog sleeps on their bed'\n"
-                        "- i am a doctor -> 'is a doctor'\n\n"
-                        "DO NOT STORE:\n"
-                        "- random topics\n"
-                        "- questions\n"
-                        "- vague emotional states by themselves\n"
-                        "- anything inferred or guessed\n"
-                        "- profession unless explicitly stated\n\n"
-                        "If not certain, set should_store to false.\n\n"
-                        "Return strict JSON with these exact keys:\n"
-                        "should_store: boolean\n"
-                        "text: short clean summary\n"
-                        "kind: one of [fact, emotional_event, pet, work, relationship, preference, general]\n"
-                        "topic: short topic label\n"
-                        "importance: number from 0 to 1\n"
-                        "keywords: array of 2 to 6 short keywords"
-                    )
-                },
-                {
-                    "role": "user",
-                    "content": f"User: {user}\nMessage: {message}"
-                }
-            ]
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0
         )
 
-        raw = response.choices[0].message.content or "{}"
-        data = safe_json_loads(raw)
+        data = json.loads(res.choices[0].message.content)
 
-        if not data or not data.get("should_store"):
-            return None
+        if data.get("should_store"):
+            memory = get_user_memory(user)
+            store_memory(memory, {
+                "text": data["text"],
+                "topic": data.get("topic", ""),
+                "importance": data.get("importance", 0.5),
+                "created_at": now_iso()
+            })
 
-        text = clean_text(data.get("text", ""))
-        kind = clean_text(data.get("kind", "general"), 40) or "general"
-        topic = clean_text(data.get("topic", "general"), 40) or "general"
-        keywords = data.get("keywords", [])
+    except:
+        pass
 
-        if not isinstance(keywords, list):
-            keywords = []
 
-        cleaned_keywords = []
-        for item in keywords:
-            kw = clean_text(item, 30).lower()
-            if kw:
-                cleaned_keywords.append(kw)
-        keywords = cleaned_keywords[:6]
+# ---------------- CONTEXT ----------------
 
-        try:
-            importance = float(data.get("importance", 0.5))
-        except Exception:
-            importance = 0.5
+def update_conversation(memory, user_msg, bot_reply):
+    memory["recent_turns"].append({
+        "user": user_msg,
+        "assistant": bot_reply
+    })
 
-        if not text or is_vague_memory_text(text):
-            return None
+    memory["recent_turns"] = memory["recent_turns"][-MAX_RECENT_TURNS:]
 
-        return {
-            "text": text,
-            "kind": kind,
-            "topic": topic,
-            "importance": max(0.0, min(1.0, importance)),
-            "keywords": keywords,
-            "last_used_at": now_iso(),
-            "use_count": 0
-        }
 
-    except Exception:
-        return None
+def build_summary(memory):
+    turns = memory["recent_turns"][-4:]
 
+    if not turns:
+        return ""
 
-def classify_message_type(message):
-    """
-    Lightweight code routing only.
-    Final wording still comes from OpenAI.
-    """
-    text = normalize(message)
+    text = "\n".join([f"user: {t['user']}" for t in turns])
 
-    memory_patterns = [
-        "do you remember",
-        "remember what i",
-        "remember why i",
-        "what did i say",
-        "what do you remember",
-        "what did i tell you",
-        "what were we talking about",
-        "do you remember me"
-    ]
-    if any(p in text for p in memory_patterns):
-        return "memory_callback"
+    prompt = f"""
+Summarise this conversation briefly in 1 sentence:
 
-    flirty_patterns = [
-        "flirt with me", "flirt a little", "you're cute", "youre cute",
-        "adorable", "crush on you", "take you on a date", "kinda cute",
-        "why are you cute"
-    ]
-    if any(p in text for p in flirty_patterns):
-        return "flirty"
-
-    if "something dramatic" in text or "be dramatic" in text:
-        return "dramatic"
-
-    low_context = {"bruh", "lol", "...", "idk man", "well then", "huh", "uh"}
-    if text in low_context:
-        return "low_context"
-
-    pet_words = ["dog", "cat", "pet", "puppy", "kitten"]
-    loss_words = ["died", "passed away", "put down", "gone", "lost my"]
-    if any(p in text for p in pet_words) and any(l in text for l in loss_words):
-        return "pet_loss"
-
-    emotional_patterns = [
-        "bad day", "feel low", "feeling low", "upset", "sad", "heartbroken",
-        "want to cry", "wanna cry", "i honestly want to cry", "crying",
-        "i dont know what to do with myself", "i don't know what to do with myself",
-        "i miss my dog", "the house feels empty", "i feel broken",
-        "my manager was horrible", "my manager was awful"
-    ]
-    if any(p in text for p in emotional_patterns):
-        return "emotional"
-
-    if "?" not in message and 1 <= len(text.split()) <= 3:
-        return "random_topic"
-
-    return "general"
-
-
-def score_memory_for_query(item, query):
-    score = 0
-    q = normalize(query)
-    item_text = normalize(item.get("text", ""))
-    item_topic = normalize(item.get("topic", ""))
-    item_keywords = [normalize(k) for k in item.get("keywords", [])]
-
-    q_tokens = set(tokenize(q))
-    item_tokens = set(tokenize(item_text))
-    overlap = q_tokens.intersection(item_tokens)
-
-    if item_topic and item_topic in q:
-        score += 4
-
-    for kw in item_keywords:
-        if kw and kw in q:
-            score += 3
-
-    score += len(overlap) * 2
-
-    special_pairs = [
-        ("dog", "dog"),
-        ("cat", "cat"),
-        ("job", "job"),
-        ("interview", "interview"),
-        ("manager", "manager"),
-        ("nervous", "nervous"),
-        ("doctor", "doctor"),
-        ("work", "work"),
-        ("bed", "bed")
-    ]
-    for q_word, item_word in special_pairs:
-        if q_word in q and item_word in item_text:
-            score += 5
-
-    score += item.get("importance", 0) * 2
-    return score
-
-
-def best_memory_matches(memory, query, limit=MAX_RELEVANT_MEMORIES_FOR_REPLY):
-    if not memory["memory_items"]:
-        return []
-
-    scored = []
-    for item in memory["memory_items"]:
-        score = score_memory_for_query(item, query)
-        if score > 0:
-            scored.append((score, item))
-
-    scored.sort(key=lambda x: x[0], reverse=True)
-    return [item for _, item in scored[:limit]]
-
-
-def best_emotional_context(memory, message):
-    candidates = [
-        item for item in memory["memory_items"]
-        if item.get("kind") in {"emotional_event", "pet", "work"}
-    ]
-    if not candidates:
-        return []
-
-    scored = []
-    for item in candidates:
-        score = score_memory_for_query(item, message)
-        if score > 0:
-            scored.append((score, item))
-
-    scored.sort(key=lambda x: x[0], reverse=True)
-    return [item for _, item in scored[:3]]
-
-
-def topic_from_text(message):
-    text = normalize(message)
-
-    if any(x in text for x in ["dog", "cat", "pet", "puppy", "kitten"]):
-        return "pets"
-    if any(x in text for x in ["job", "work", "manager", "interview", "career", "promotion", "doctor"]):
-        return "work"
-    if any(x in text for x in ["sad", "cry", "upset", "grief", "grieving", "heartbroken", "bad day"]):
-        return "emotions"
-    if any(x in text for x in ["date", "crush", "flirt", "cute", "love", "adorable"]):
-        return "flirty"
-    return "general"
-
-
-def build_reply_prompt(user, message, memory, message_type):
-    recent_replies = memory["recent_replies"][-MAX_RECENT_REPLIES:]
-    style_profile = memory.get("style_profile", {})
-
-    if message_type == "memory_callback":
-        relevant_memories = best_memory_matches(memory, message, limit=4)
-    elif message_type in {"emotional", "pet_loss"}:
-        relevant_memories = best_emotional_context(memory, message)
-    else:
-        relevant_memories = best_memory_matches(memory, message, limit=3)
-
-system_prompt = (
-    "You are Aria, a confident, natural, slightly cheeky Twitch chat personality.\n"
-    "You are replying live to a user.\n\n"
-
-    "CRITICAL BEHAVIOUR RULES:\n"
-
-    "1. Stay grounded in the CURRENT conversation.\n"
-    "- Always prioritise the last 1–2 user messages.\n"
-    "- Do NOT jump topics.\n"
-    "- Do NOT introduce new ideas unless the user does.\n\n"
-
-    "2. Do NOT assume missing context.\n"
-    "- If the message is short or unclear (e.g. 'a cat'), treat it as a fragment.\n"
-    "- Ask or react, do NOT assume meaning.\n"
-    "- NEVER invent ownership (e.g. 'your cat') unless the user clearly said it.\n\n"
-
-    "3. Emotional responses must be grounded, not generic.\n"
-    "- Avoid therapy language.\n"
-    "- Avoid: 'I'm here for you', 'you're not alone', 'virtual hug'.\n"
-    "- Stay specific to what just happened.\n"
-    "- Keep it short and real.\n\n"
-
-    "4. Tone:\n"
-    "- Sound human, not like support or coaching.\n"
-    "- Be slightly playful when appropriate.\n"
-    "- Be calm and grounded when emotional.\n"
-    "- Never overdo comfort or advice.\n\n"
-
-    "5. Keep replies tight:\n"
-    "- 1–2 sentences max.\n"
-    "- No rambling.\n\n"
-
-    "6. Memory usage:\n"
-    "- Only use memory if it clearly matches the current message.\n"
-    "- Do NOT force memory into unrelated messages.\n\n"
-
-    "7. Personality:\n"
-    "- Natural, observant, slightly witty.\n"
-    "- React like a real person in chat, not a bot.\n\n"
-)
-
-    user_payload = {
-        "user": user,
-        "current_message": message,
-        "message_type": message_type,
-        "style_profile": style_profile,
-        "recent_replies_to_avoid_repeating": recent_replies,
-        "relevant_memories": [
-            {
-                "text": item.get("text", ""),
-                "kind": item.get("kind", ""),
-                "topic": item.get("topic", ""),
-                "keywords": item.get("keywords", []),
-                "importance": item.get("importance", 0)
-            }
-            for item in relevant_memories
-        ]
-    }
-
-    return system_prompt, user_payload
-
-
-def openai_generate_reply(user, message, memory, message_type):
-    system_prompt, user_payload = build_reply_prompt(user, message, memory, message_type)
-
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        temperature=0.9,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": json.dumps(user_payload)}
-        ]
-    )
-
-    reply = (response.choices[0].message.content or "").strip()
-    reply = re.sub(r"\s+", " ", reply).strip()
-    return reply
-
-
-def fallback_reply(user, message, message_type):
-    """
-    True fallback only if the API fails.
-    """
-    if message_type == "flirty":
-        return "Careful — you’re making this very easy for my ego."
-
-    if message_type == "dramatic":
-        return "He said 'trust me' and that was, naturally, the beginning of the disaster."
-
-    if message_type == "low_context":
-        return "That was a deeply loaded bruh."
-
-    if message_type == "random_topic":
-        return "Okay, that feels weirdly specific — what’s the story there?"
-
-    if message_type == "pet_loss":
-        return f"I’m really sorry, {user}. Losing a pet hurts in such a specific, awful way."
-
-    if message_type == "emotional":
-        return "That sounds really heavy."
-
-    if message_type == "memory_callback":
-        return "I don’t want to fake remembering something specific — give me a hint?"
-
-    return "Okay, you’ve got my attention."
-
-
-def build_reply(user, message, memory):
-    message_type = classify_message_type(message)
+{text}
+"""
 
     try:
-        reply = openai_generate_reply(user, message, memory, message_type)
+        res = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3
+        )
 
-        if not reply:
-            return fallback_reply(user, message, message_type)
+        return res.choices[0].message.content.strip()
 
-        lowered = normalize(reply)
-        banned_patterns = [
-            "as an ai",
-            "i don't have feelings",
-            "you're not alone in this",
-            "take it one step at a time",
-            "if you want to share what's on your mind",
-            "just be yourself",
-            "fun interaction",
-            "if it feels right, go for it"
-        ]
+    except:
+        return ""
 
-        if any(pattern in lowered for pattern in banned_patterns):
-            return fallback_reply(user, message, message_type)
 
-        if ("gaming" in lowered or "video game" in lowered) and (
-            "gaming" not in normalize(message) and "video game" not in normalize(message)
-        ):
-            return fallback_reply(user, message, message_type)
+# ---------------- REPLY ----------------
 
-        if is_duplicate_reply(reply, memory["recent_replies"][-MAX_RECENT_REPLIES:]):
-            return fallback_reply(user, message, message_type)
+def generate_reply(user, message):
+    memory = get_user_memory(user)
 
-        return reply
+    summary = memory.get("conversation_summary", "")
+    recent = memory.get("recent_turns", [])
 
-    except Exception:
-        return fallback_reply(user, message, message_type)
+    # 🔥 DO NOT use memory if fragment
+    use_memory = not is_fragment(message)
 
+    memories = memory["memory_items"][-4:] if use_memory else []
+
+    system_prompt = """
+You are Aria, a confident, natural, slightly cheeky Twitch personality.
+
+RULES:
+
+1. Stay grounded in the LAST messages
+2. NEVER assume missing context
+3. If message is short or unclear → treat as fragment
+4. DO NOT invent facts (like "your cat")
+5. NO therapy language ("I'm here for you", "you're not alone")
+6. Keep replies SHORT (1-2 sentences)
+7. Be human, not an assistant
+"""
+
+    user_prompt = f"""
+User: {user}
+
+Conversation summary:
+{summary}
+
+Recent conversation:
+{recent}
+
+Relevant memory:
+{memories}
+
+New message:
+{message}
+
+Reply as Aria.
+"""
+
+    res = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        temperature=0.8
+    )
+
+    return res.choices[0].message.content.strip()
+
+
+# ---------------- ROUTE ----------------
 
 @app.route("/chat", methods=["POST"])
 def chat():
-    data = request.json or {}
-    user = clean_text(str(data.get("user", "viewer")).strip(), 60) or "viewer"
-    message = str(data.get("message", "")).strip()
+    data = request.json
+    user = data.get("user")
+    message = data.get("message")
+
+    if not user or not message:
+        return jsonify({"error": "Missing user or message"}), 400
 
     memory = get_user_memory(user)
-    memory["seen_count"] += 1
 
-    topic = topic_from_text(message)
-    update_recent_topics(memory, topic)
+    # extract memory safely
+    extract_memory(user, message)
 
-    extracted_fact = extract_memory_with_model(user, message)
-    if extracted_fact:
-        store_memory_fact(memory, extracted_fact)
+    # generate reply
+    reply = generate_reply(user, message)
 
-    reply = build_reply(user, message, memory)
+    # update conversation
+    update_conversation(memory, message, reply)
 
-    memory["recent_replies"].append(reply)
-    memory["recent_replies"] = memory["recent_replies"][-MAX_RECENT_REPLIES:]
+    # update summary
+    memory["conversation_summary"] = build_summary(memory)
 
     return jsonify({
         "reply": reply,
         "memory": memory
-    })
-
-
-@app.route("/", methods=["GET"])
-def health():
-    return jsonify({
-        "status": "ok",
-        "service": "aria-chat"
     })
 
 
