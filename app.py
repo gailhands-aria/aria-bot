@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify, send_from_directory
 from openai import OpenAI
+from cartesia import Cartesia
 import os
 import json
 import re
@@ -7,7 +8,14 @@ from datetime import datetime, timezone
 import uuid
 
 app = Flask(__name__)
+
+# ---------------- CLIENTS ----------------
+
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+cartesia_client = Cartesia(api_key=os.getenv("CARTESIA_API_KEY"))
+CARTESIA_VOICE_ID = os.getenv("CARTESIA_VOICE_ID")
+
+# ---------------- MEMORY ----------------
 
 USER_MEMORY = {}
 
@@ -27,10 +35,6 @@ def now_iso():
 
 def normalize(text):
     return re.sub(r"\s+", " ", (text or "").lower()).strip()
-
-
-def is_fragment(message):
-    return len(message.strip().split()) <= 3
 
 
 def get_opener(text):
@@ -209,33 +213,37 @@ Reply:
 # ---------------- TTS STYLE ----------------
 
 def shape_for_voice(text):
-    # 🔥 KEY PART — makes her sound alive
     text = text.replace(".", "")
-    text = text.replace("!", "!")
     text = text.strip()
 
-    # Add slight upbeat lift naturally
     if text.endswith("better"):
         text += " though"
 
     return text
 
 
-# ---------------- TTS ----------------
+# ---------------- TTS (CARTESIA) ----------------
 
 def generate_tts(text):
     try:
-        filename = f"aria_{uuid.uuid4().hex}.mp3"
+        filename = f"aria_{uuid.uuid4().hex}.wav"
         filepath = os.path.join(AUDIO_FOLDER, filename)
 
         styled = shape_for_voice(text)
 
-        with client.audio.speech.with_streaming_response.create(
-            model="gpt-4o-mini-tts",
-            voice="sage",
-            input=styled
-        ) as response:
-            response.stream_to_file(filepath)
+        audio_bytes = cartesia_client.tts.bytes(
+            model_id="sonic-2",
+            transcript=styled,
+            voice_id=CARTESIA_VOICE_ID,
+            output_format={
+                "container": "wav",
+                "encoding": "pcm_f32le",
+                "sample_rate": 44100,
+            },
+        )
+
+        with open(filepath, "wb") as f:
+            f.write(audio_bytes)
 
         return filename
 
