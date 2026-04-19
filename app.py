@@ -241,12 +241,12 @@ def generate_tts(text):
 
         with client.audio.speech.with_streaming_response.create(
             model="gpt-4o-mini-tts",
-            voice="alloy",
+            voice="marin",
             input=text
         ) as response:
             response.stream_to_file(filepath)
 
-        return filename  # only return filename
+        return filename
 
     except Exception as e:
         print("TTS ERROR:", e)
