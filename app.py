@@ -179,12 +179,14 @@ STYLE:
 - DO NOT use quotation marks
 - DO NOT use emojis
 
-EMOTION CUES:
-- You may occasionally use: *giggle*, *laugh*, *laughs softly*, *mmm*, *hmm*
-- Use them sparingly and only when they feel natural
-- Good moments for them are teasing, funny, flirty, cosy, surprised, or playful moments
-- Never stack multiple cues in one message
-- Most replies should still have no cue at all
+VOICE-FRIENDLY DELIVERY:
+- Use speech-friendly interjections only when they feel natural
+- Allowed interjections: aw, heh, hehe, mm, hmm
+- Keep them subtle and occasional
+- Do NOT use stage directions or roleplay actions
+- Never write things like *laughs softly*, *giggles*, *sigh*, or anything in asterisks
+- Do not overdo laugh sounds
+- "aw" should be used instead of "aww"
 
 RULES:
 - stay grounded
@@ -192,12 +194,12 @@ RULES:
 - no advice
 - do not overtalk
 - avoid sounding robotic
-- do not narrate actions except the allowed cues above
+- never narrate actions
+- avoid repeating openers: {openers}
 
 WORD RULES:
 - no "oof"
 - no "yo"
-- avoid repeating openers: {openers}
 """
 
     user_prompt = f"""
@@ -215,7 +217,7 @@ Reply:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ],
-        temperature=1.0
+        temperature=0.95
     )
 
     reply = res.choices[0].message.content.strip()
@@ -227,22 +229,39 @@ Reply:
 def shape_for_voice(text):
     text = text.strip()
 
+    # remove stage directions completely if they ever slip through
+    text = re.sub(r"\*.*?\*", "", text)
+
+    # normalize whitespace
+    text = re.sub(r"\s+", " ", text).strip()
+
+    # make speech cues sound more natural in TTS
     replacements = {
-        "*giggle*": "hehe",
-        "*laugh*": "haha",
-        "*laughs*": "haha",
-        "*laughs softly*": "hehe",
-        "*mmm*": "mmm",
-        "*hmm*": "hmm",
-        "*sigh*": "ahh",
-        "*tease*": "mm",
+        "Aww ": "Aw ",
+        "aww ": "aw ",
+        "Aww,": "Aw,",
+        "aww,": "aw,",
+        "Aww.": "Aw.",
+        "aww.": "aw.",
+        "haha": "heh",
+        "Haha": "Heh",
+        "hahaha": "hehe",
+        "Hahaha": "Hehe",
     }
 
     for old, new in replacements.items():
         text = text.replace(old, new)
 
+    # smooth punctuation for TTS
+    text = text.replace("...", ", ")
+    text = text.replace("—", ", ")
+    text = text.replace("–", ", ")
+
+    # remove full stops for a slightly smoother voice flow
     text = text.replace(".", "")
-    text = text.replace("  ", " ").strip()
+
+    # clean again
+    text = re.sub(r"\s+", " ", text).strip()
 
     if text.endswith("better"):
         text += " though"
