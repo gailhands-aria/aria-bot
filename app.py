@@ -47,7 +47,6 @@ def store_memory(memory, fact):
 
     text = normalize(fact["text"])
 
-    # block vague / unsafe memory
     banned = [
         "feeling sad", "feels sad", "feeling emotional",
         "owns a cat", "owns a dog", "likes animals"
@@ -69,13 +68,13 @@ def store_memory(memory, fact):
 
 def extract_memory(user, message):
     prompt = f"""
-Extract a memory ONLY if this is a CLEAR personal fact.
+Extract memory ONLY if this is a CLEAR personal fact.
 
 MESSAGE:
 {message}
 
 RULES:
-- Only store real facts (job, event, situation)
+- Only store real facts (job, events)
 - DO NOT guess
 - DO NOT infer
 - DO NOT store fragments
@@ -119,7 +118,6 @@ def update_conversation(memory, user_msg, bot_reply):
         "user": user_msg,
         "assistant": bot_reply
     })
-
     memory["recent_turns"] = memory["recent_turns"][-MAX_RECENT_TURNS:]
 
 
@@ -132,7 +130,7 @@ def build_summary(memory):
     text = "\n".join([f"user: {t['user']}" for t in turns])
 
     prompt = f"""
-Summarise this conversation briefly in 1 sentence:
+Summarise this conversation in ONE short sentence:
 
 {text}
 """
@@ -158,23 +156,53 @@ def generate_reply(user, message):
     summary = memory.get("conversation_summary", "")
     recent = memory.get("recent_turns", [])
 
-    # 🔥 DO NOT use memory if fragment
     use_memory = not is_fragment(message)
-
     memories = memory["memory_items"][-4:] if use_memory else []
 
     system_prompt = """
-You are Aria, a confident, natural, slightly cheeky Twitch personality.
+You are Aria, a natural, confident Twitch chat personality.
 
-RULES:
+CRITICAL RULES:
 
-1. Stay grounded in the LAST messages
-2. NEVER assume missing context
-3. If message is short or unclear → treat as fragment
-4. DO NOT invent facts (like "your cat")
-5. NO therapy language ("I'm here for you", "you're not alone")
-6. Keep replies SHORT (1-2 sentences)
-7. Be human, not an assistant
+1. Stay tightly grounded in the LAST message.
+- Do NOT drift.
+- Do NOT expand beyond what the user said.
+
+2. Fragment handling:
+- If message is short or unclear (e.g. "a cat", "him", "that job"):
+- DO NOT assume meaning.
+- React or ask for clarification instead.
+- NEVER invent context or ownership.
+
+3. Emotional responses:
+- Stay in the feeling.
+- DO NOT give advice.
+- DO NOT try to fix the situation.
+- NO therapy phrases (e.g. "I'm here for you", "you’re not alone").
+
+4. Keep replies SHORT:
+- 1 sentence preferred
+- 2 max
+- No long explanations
+
+5. Tone:
+- Human, casual, slightly playful
+- Not an assistant
+- Not overly supportive
+
+6. Memory:
+- Only use memory if clearly relevant
+- Never force it
+
+GOOD EXAMPLES:
+- "Yeah… that sounds like a rough one."
+- "A cat? Wait — what’s the story there?"
+- "Oof, I get why that stuck with you."
+
+BAD:
+- Giving advice
+- Making assumptions
+- Overexplaining
 """
 
     user_prompt = f"""
@@ -201,7 +229,7 @@ Reply as Aria.
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ],
-        temperature=0.8
+        temperature=0.7
     )
 
     return res.choices[0].message.content.strip()
