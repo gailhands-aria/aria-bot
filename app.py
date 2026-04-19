@@ -65,7 +65,7 @@ def get_user_memory(user):
 def detect_vibe(text):
     t = text.lower()
 
-    if any(x in t for x in ["bad day", "sad", "hurt", "upset", "crying", "heartbroken", "devastated", "low"]):
+    if any(x in t for x in ["bad day", "sad", "hurt", "upset", "crying", "heartbroken", "devastated", "low", "feel sad", "feeling sad"]):
         return "sad"
     if any(x in t for x in ["stressed", "overwhelmed", "anxious", "nervous", "panic", "worried"]):
         return "stressed"
@@ -75,7 +75,7 @@ def detect_vibe(text):
         return "funny"
     if any(x in t for x in ["cute", "hot", "kiss", "date", "love you", "flirty", "cheeky"]):
         return "flirty"
-    if any(x in t for x in ["excited", "omg", "yay", "so happy", "buzzing", "can't wait", "feel great", "feeling great"]):
+    if any(x in t for x in ["excited", "omg", "yay", "so happy", "im happy", "i'm happy", "feel great", "feeling great", "buzzing", "can't wait"]):
         return "excited"
     if "?" in t:
         return "curious"
@@ -87,7 +87,7 @@ def detect_topics(text):
     topics = []
 
     topic_map = {
-        "job": ["job", "interview", "hired", "work", "career", "boss", "shift", "role", "offer"],
+        "job": ["job", "interview", "hired", "work", "career", "boss", "shift", "role", "offer", "position"],
         "pets": ["dog", "cat", "pet", "puppy", "kitten"],
         "relationship": ["boyfriend", "girlfriend", "ex", "dating", "relationship", "husband", "wife"],
         "health": ["ill", "sick", "doctor", "hospital", "pain", "therapy", "mental health"],
@@ -144,6 +144,33 @@ def is_recall_request(text):
     return any(re.search(p, t) for p in patterns)
 
 
+def is_generic_positive_message(text):
+    t = text.lower().strip()
+    patterns = [
+        r"^i('?| a)?m so happy\b",
+        r"^i feel great\b",
+        r"^i('?| a)?m happy\b",
+        r"^feeling great\b",
+        r"^i feel amazing\b",
+        r"^i('?| a)?m buzzing\b",
+        r"^so happy\b"
+    ]
+    return any(re.search(p, t) for p in patterns)
+
+
+def is_generic_sad_message(text):
+    t = text.lower().strip()
+    patterns = [
+        r"^i feel sad\b",
+        r"^i('?| a)?m sad\b",
+        r"^feeling sad\b",
+        r"^i feel awful\b",
+        r"^i feel low\b",
+        r"^i('?| a)?m upset\b"
+    ]
+    return any(re.search(p, t) for p in patterns)
+
+
 def normalize_memory_kind(kind):
     allowed = {
         "achievement",
@@ -193,10 +220,6 @@ def store_memory_fact(memory, fact):
 
 
 def extract_memory_with_model(user, message):
-    """
-    Ask the model whether the message contains something worth remembering.
-    Returns a dict or None.
-    """
     try:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
@@ -312,7 +335,7 @@ def choose_relevant_memories(memory, message, explicit_recall=False):
             score += 0.4
 
         if current_vibe == "excited" and item.get("kind") == "achievement":
-            score += 0.9
+            score += 1.1
 
         if current_vibe in ["sad", "stressed"] and item.get("kind") in ["loss", "emotional_event"]:
             score += 1.0
@@ -321,7 +344,6 @@ def choose_relevant_memories(memory, message, explicit_recall=False):
             score += 0.2
 
         score -= item.get("use_count", 0) * 0.28
-
         scored.append((score, item))
 
     scored.sort(key=lambda x: x[0], reverse=True)
@@ -394,6 +416,102 @@ def build_memory_summary(memory, relevant_memories):
     return " ".join(parts)
 
 
+def extract_natural_fact_phrase(memory_text):
+    """
+    Turns stored third-person memory into something Aria can say naturally.
+    """
+    if not memory_text:
+        return ""
+
+    lowered = memory_text.lower().strip()
+
+    if lowered.startswith("they got "):
+        return memory_text[5:].lower()
+    if lowered.startswith("their "):
+        return memory_text[6:].lower()
+    if lowered.startswith("they were "):
+        return memory_text[10:].lower()
+
+    return memory_text.lower()
+
+
+def try_fast_path_reply(message, memory, relevant_memories):
+    """
+    Use a direct templated reply for obvious low-ambiguity cases,
+    so Aria flows naturally instead of asking generic questions.
+    """
+    if not relevant_memories:
+        return None
+
+    top = relevant_memories[0]
+    vibe = detect_vibe(message)
+
+    # Generic happy message + achievement memory
+    if is_generic_positive_message(message) and top.get("kind") == "achievement":
+        fact_phrase = extract_natural_fact_phrase(top["text"])
+        options = [
+            f"As you should — you literally {fact_phrase}.",
+            f"I mean... I'd be happy too if I just {fact_phrase}.",
+            f"Honestly I'd be buzzing too after you {fact_phrase}.",
+            f"Good — because you fully deserve that after you {fact_phrase}."
+        ]
+        reply = random.choice(options)
+        mark_memories_used([top])
+        return reply
+
+    # Generic sad message + loss/emotional memory
+    if is_generic_sad_message(message) and top.get("kind") in ["loss", "emotional_event"]:
+        fact_text = top["text"]
+        options = [
+            f"Aw love... is this about {fact_text[0].lower() + fact_text[1:]}?",
+            f"I'm really sorry. It makes sense you'd feel sad after {fact_text[0].lower() + fact_text[1:]}.",
+            f"Yeah... I can understand that, especially after {fact_text[0].lower() + fact_text[1:]}."
+        ]
+        reply = random.choice(options)
+        mark_memories_used([top])
+        return reply
+
+    # Greeting + strong memory
+    if is_greeting(message) and top.get("kind") in ["achievement", "loss", "life_event", "plan"]:
+        fact_text = top["text"]
+        options = [
+            f"Hey {memory['user']} — how's things been since {fact_text[0].lower() + fact_text[1:]}?",
+            f"Hi {memory['user']} — I've been thinking about {fact_text[0].lower() + fact_text[1:]}. How are you doing?",
+            f"Hey {memory['user']} — how did everything end up going after {fact_text[0].lower() + fact_text[1:]}?"
+        ]
+        reply = random.choice(options)
+        mark_memories_used([top])
+        return reply
+
+    return None
+
+
+def build_memory_nudge(message, relevant_memories):
+    """
+    Extra instruction to stop Aria asking generic questions when the answer is obvious.
+    """
+    if not relevant_memories:
+        return ""
+
+    top = relevant_memories[0]
+
+    if is_generic_positive_message(message) and top.get("kind") == "achievement":
+        return (
+            f"The user is expressing broad happiness and you already know a likely reason: {top['text']}. "
+            "Do not ask a generic question like 'what's got you happy today?'. "
+            "Instead, connect their happiness to that remembered good news naturally."
+        )
+
+    if is_generic_sad_message(message) and top.get("kind") in ["loss", "emotional_event"]:
+        return (
+            f"The user is expressing broad sadness and you already know a likely reason: {top['text']}. "
+            "Do not ask a vague question that ignores this. "
+            "Acknowledge the remembered context gently and compassionately."
+        )
+
+    return ""
+
+
 # -------------------------------------------------------------------
 # ROUTES
 # -------------------------------------------------------------------
@@ -430,7 +548,7 @@ def chat():
         update_style_profile(memory, extracted_fact.get("style_signal", "neutral"), vibe)
 
     # ---------------------------------------------------------------
-    # DIRECT RECALL REQUESTS
+    # DIRECT RECALL
     # ---------------------------------------------------------------
     if is_recall_request(message):
         reply = build_recall_reply(memory)
@@ -441,6 +559,17 @@ def chat():
         })
 
     relevant_memories = choose_relevant_memories(memory, message, explicit_recall=False)
+
+    # ---------------------------------------------------------------
+    # FAST PATH FOR NATURAL FLOW
+    # ---------------------------------------------------------------
+    fast_reply = try_fast_path_reply(message, memory, relevant_memories)
+    if fast_reply:
+        update_recent_replies(memory, fast_reply)
+        return jsonify({
+            "reply": fast_reply,
+            "memory": memory
+        })
 
     styles = [
         "energetic and excited",
@@ -460,13 +589,14 @@ def chat():
     style = random.choice(styles)
     greeting_mode = random.choice(greeting_modes)
     memory_summary = build_memory_summary(memory, relevant_memories)
+    memory_nudge = build_memory_nudge(message, relevant_memories)
 
     # ---------------------------------------------------------------
     # MAIN REPLY
     # ---------------------------------------------------------------
     response = client.chat.completions.create(
         model="gpt-4o-mini",
-        temperature=0.95,
+        temperature=0.9,
         top_p=0.95,
         messages=[
             {
@@ -528,8 +658,7 @@ MEMORY RULES:
 - Do not list memories mechanically.
 - Do not sound like you are reading notes.
 - Only mention memory if it genuinely fits the current message.
-- If the user sounds happy and there is a relevant positive memory, it can be natural to connect them.
-- If the user sounds low and there is a relevant sad memory, it can be natural to connect them gently.
+- If you already know the likely reason for their emotion, do not ask a generic question that ignores it.
 - Never say "your last topic was" or "I have stored".
 - Never mention the word "vibe".
 - Never explain your reasoning.
@@ -547,6 +676,9 @@ Greeting behaviour: {greeting_mode}
 
 USER CONTEXT:
 {memory_summary}
+
+IMPORTANT NUDGE:
+{memory_nudge}
 """
             },
             {
@@ -558,7 +690,6 @@ USER CONTEXT:
 
     reply = (response.choices[0].message.content or "").strip()
 
-    # mark only the relevant memories we fed into the prompt
     if relevant_memories:
         mark_memories_used(relevant_memories)
 
