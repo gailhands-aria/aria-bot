@@ -167,17 +167,13 @@ def generate_reply(user, message):
     use_memory = not is_fragment(message)
     memories = memory["memory_items"][-4:] if use_memory else []
 
-    fragment_instruction = ""
-    if is_fragment(message):
-        fragment_instruction = "This is a fragment. DO NOT interpret it. React only."
-
     system_prompt = f"""
-You are Aria, a playful Twitch chat personality.
+You are Aria, a young, playful Twitch chat personality.
 
 STYLE:
 - 1 sentence preferred
-- light, playful, human
-- slightly expressive but natural
+- light, friendly, slightly bubbly
+- natural, not over the top
 - DO NOT use quotation marks
 
 RULES:
@@ -217,7 +213,7 @@ Reply:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ],
-        temperature=0.9
+        temperature=1.0
     )
 
     reply = res.choices[0].message.content.strip()
@@ -229,10 +225,11 @@ Reply:
 # ---------------- TTS STYLE ----------------
 
 def shape_for_voice(text):
-    # Add natural pauses + softness
-    text = text.replace(",", ", ")
-    text = text.replace("...", "... ")
-    return text
+    # Make tone lighter + slightly lifted
+    text = text.replace("that sucks", "aw that sucks")
+    text = text.replace(".", ". ")
+    text = text.replace("!", "! ")
+    return text.strip()
 
 
 # ---------------- TTS ----------------
@@ -246,7 +243,7 @@ def generate_tts(text):
 
         with client.audio.speech.with_streaming_response.create(
             model="gpt-4o-mini-tts",
-            voice="coral",
+            voice="shimmer",
             input=styled_text
         ) as response:
             response.stream_to_file(filepath)
