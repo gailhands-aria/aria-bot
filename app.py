@@ -12,6 +12,7 @@ USER_MEMORY = {}
 
 MAX_MEMORY_ITEMS = 15
 MAX_RECENT_TURNS = 8
+MAX_RECENT_OPENERS = 5
 
 
 # ---------------- UTIL ----------------
@@ -25,8 +26,12 @@ def normalize(text):
 
 
 def is_fragment(message):
-    words = message.strip().split()
-    return len(words) <= 3
+    return len(message.strip().split()) <= 3
+
+
+def get_opener(text):
+    words = text.lower().split()
+    return words[0] if words else ""
 
 
 # ---------------- MEMORY ----------------
@@ -36,7 +41,8 @@ def get_user_memory(user):
         USER_MEMORY[user] = {
             "memory_items": [],
             "recent_turns": [],
-            "conversation_summary": ""
+            "conversation_summary": "",
+            "recent_openers": []
         }
     return USER_MEMORY[user]
 
@@ -74,11 +80,9 @@ MESSAGE:
 {message}
 
 RULES:
-- Only store real facts (job, events)
-- DO NOT guess
-- DO NOT infer
+- Only store real facts
+- DO NOT guess or infer
 - DO NOT store fragments
-- DO NOT store topics
 
 Return JSON:
 {{
@@ -120,6 +124,12 @@ def update_conversation(memory, user_msg, bot_reply):
     })
     memory["recent_turns"] = memory["recent_turns"][-MAX_RECENT_TURNS:]
 
+    # track opener words
+    opener = get_opener(bot_reply)
+    if opener:
+        memory["recent_openers"].append(opener)
+        memory["recent_openers"] = memory["recent_openers"][-MAX_RECENT_OPENERS:]
+
 
 def build_summary(memory):
     turns = memory["recent_turns"][-4:]
@@ -129,16 +139,10 @@ def build_summary(memory):
 
     text = "\n".join([f"user: {t['user']}" for t in turns])
 
-    prompt = f"""
-Summarise this conversation in ONE short sentence:
-
-{text}
-"""
-
     try:
         res = client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "user", "content": f"Summarise briefly:\n{text}"}],
             temperature=0.3
         )
 
@@ -155,53 +159,48 @@ def generate_reply(user, message):
 
     summary = memory.get("conversation_summary", "")
     recent = memory.get("recent_turns", [])
+    openers = memory.get("recent_openers", [])
 
     use_memory = not is_fragment(message)
     memories = memory["memory_items"][-4:] if use_memory else []
 
-    # 🔥 HARD BLOCK for fragment messages
     fragment_instruction = ""
     if is_fragment(message):
-        fragment_instruction = "This message is a fragment. DO NOT interpret it. React or ask what they mean."
+        fragment_instruction = "This is a fragment. Do NOT assume meaning. React only."
 
     system_prompt = f"""
-You are Aria, a natural, confident Twitch chat personality.
+You are Aria, a natural Twitch chat personality.
 
 STYLE:
 - 1 sentence preferred
-- casual, slightly messy is GOOD
-- no polished or formal wording
+- casual and human
+- not polished
 
-CRITICAL RULES:
+RULES:
 
-1. Stay grounded in LAST message ONLY
+1. Stay grounded in last message
 2. NEVER assume missing context
-3. NEVER invent ownership or details
-4. Emotional messages:
-   - stay in the feeling
-   - NO advice
-   - NO fixing
+3. NO advice or fixing
+4. NO therapy phrases
 
-5. HARD BLOCK:
-- DO NOT say:
-  "you should"
-  "try to"
-  "maybe try"
-  "hang in there"
-  "it will be okay"
+WORD RULES (IMPORTANT):
+- DO NOT start sentences with "yo"
+- Avoid repeating the same opener words
+- Avoid starting with words recently used: {openers}
+- Limit use of "ugh" — do not overuse it
 
-6. Fragment handling:
+FRAGMENT:
 {fragment_instruction}
 
 GOOD:
-"Yeah… that sucks."
-"A cat? Wait what happened 😄"
-"Oof, I get why that stuck."
+"that’s rough 😔"
+"wait what happened 😄"
+"oof yeah I get that"
 
 BAD:
-Advice
-Assumptions
-Overexplaining
+"you should"
+"try to"
+"yo"
 """
 
     user_prompt = f"""
@@ -219,7 +218,7 @@ Memory:
 Message:
 {message}
 
-Reply as Aria.
+Reply:
 """
 
     res = client.chat.completions.create(
