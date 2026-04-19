@@ -164,45 +164,31 @@ def generate_reply(user, message):
     recent = memory.get("recent_turns", [])
     openers = memory.get("recent_openers", [])
 
-    use_memory = not is_fragment(message)
-    memories = memory["memory_items"][-4:] if use_memory else []
-
     system_prompt = f"""
-You are Aria, a young, lively Twitch chat personality.
+You are Aria, a young, upbeat Twitch chat personality.
 
 STYLE:
-- 1 sentence preferred
-- upbeat, natural, quick
-- slightly playful but not forced
+- 1 sentence
+- lively, quick, slightly playful
+- natural, not forced
 - DO NOT use quotation marks
 
 RULES:
-- stay grounded in last message
+- stay grounded
 - no assumptions
 - no advice
-- no therapy tone
 
-WORD BLOCKS:
-- NEVER use "oof"
-- NEVER start with "yo"
-- Avoid repeating openers: {openers}
-- Limit "ugh"
+WORD RULES:
+- no "oof"
+- no "yo"
+- avoid repeating openers: {openers}
 """
 
     user_prompt = f"""
 User: {user}
-
-Summary:
-{summary}
-
-Recent:
-{recent}
-
-Memory:
-{memories}
-
-Message:
-{message}
+Summary: {summary}
+Recent: {recent}
+Message: {message}
 
 Reply:
 """
@@ -217,16 +203,22 @@ Reply:
     )
 
     reply = res.choices[0].message.content.strip()
-    reply = reply.strip('"').strip("'")
-
-    return reply
+    return reply.strip('"').strip("'")
 
 
 # ---------------- TTS STYLE ----------------
 
 def shape_for_voice(text):
-    # Keep it clean + energetic (NO dragging)
-    return text.strip()
+    # 🔥 KEY PART — makes her sound alive
+    text = text.replace(".", "")
+    text = text.replace("!", "!")
+    text = text.strip()
+
+    # Add slight upbeat lift naturally
+    if text.endswith("better"):
+        text += " though"
+
+    return text
 
 
 # ---------------- TTS ----------------
@@ -236,12 +228,12 @@ def generate_tts(text):
         filename = f"aria_{uuid.uuid4().hex}.mp3"
         filepath = os.path.join(AUDIO_FOLDER, filename)
 
-        styled_text = shape_for_voice(text)
+        styled = shape_for_voice(text)
 
         with client.audio.speech.with_streaming_response.create(
             model="gpt-4o-mini-tts",
-            voice="coral",
-            input=styled_text
+            voice="sage",
+            input=styled
         ) as response:
             response.stream_to_file(filepath)
 
@@ -267,9 +259,6 @@ def chat():
     user = data.get("user")
     message = data.get("message")
 
-    if not user or not message:
-        return jsonify({"error": "Missing user or message"}), 400
-
     memory = get_user_memory(user)
 
     extract_memory(user, message)
@@ -288,8 +277,7 @@ def chat():
 
     return jsonify({
         "reply": reply,
-        "audio_url": audio_url,
-        "memory": memory
+        "audio_url": audio_url
     })
 
 
