@@ -168,12 +168,12 @@ def generate_reply(user, message):
     memories = memory["memory_items"][-4:] if use_memory else []
 
     system_prompt = f"""
-You are Aria, a young, playful Twitch chat personality.
+You are Aria, a young, lively Twitch chat personality.
 
 STYLE:
 - 1 sentence preferred
-- light, friendly, slightly bubbly
-- natural, not over the top
+- upbeat, natural, quick
+- slightly playful but not forced
 - DO NOT use quotation marks
 
 RULES:
@@ -225,10 +225,7 @@ Reply:
 # ---------------- TTS STYLE ----------------
 
 def shape_for_voice(text):
-    # Make tone lighter + slightly lifted
-    text = text.replace("that sucks", "aw that sucks")
-    text = text.replace(".", ". ")
-    text = text.replace("!", "! ")
+    # Keep it clean + energetic (NO dragging)
     return text.strip()
 
 
@@ -243,7 +240,7 @@ def generate_tts(text):
 
         with client.audio.speech.with_streaming_response.create(
             model="gpt-4o-mini-tts",
-            voice="shimmer",
+            voice="coral",
             input=styled_text
         ) as response:
             response.stream_to_file(filepath)
