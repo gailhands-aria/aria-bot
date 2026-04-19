@@ -4,6 +4,7 @@ import os
 import json
 import re
 from datetime import datetime, timezone
+import uuid
 
 app = Flask(__name__)
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -13,6 +14,9 @@ USER_MEMORY = {}
 MAX_MEMORY_ITEMS = 15
 MAX_RECENT_TURNS = 8
 MAX_RECENT_OPENERS = 5
+
+AUDIO_FOLDER = "audio"
+os.makedirs(AUDIO_FOLDER, exist_ok=True)
 
 
 # ---------------- UTIL ----------------
@@ -223,11 +227,30 @@ Reply:
     )
 
     reply = res.choices[0].message.content.strip()
-
-    # 🔥 HARD CLEANUP
     reply = reply.strip('"').strip("'")
 
     return reply
+
+
+# ---------------- TTS ----------------
+
+def generate_tts(text):
+    try:
+        filename = f"aria_{uuid.uuid4().hex}.mp3"
+        filepath = os.path.join(AUDIO_FOLDER, filename)
+
+        with client.audio.speech.with_streaming_response.create(
+            model="gpt-4o-mini-tts",
+            voice="alloy",  # we can upgrade voice later
+            input=text
+        ) as response:
+            response.stream_to_file(filepath)
+
+        return filepath
+
+    except Exception as e:
+        print("TTS ERROR:", e)
+        return None
 
 
 # ---------------- ROUTE ----------------
@@ -251,8 +274,12 @@ def chat():
 
     memory["conversation_summary"] = build_summary(memory)
 
+    # 🔊 Generate voice
+    audio_file = generate_tts(reply)
+
     return jsonify({
         "reply": reply,
+        "audio_file": audio_file,
         "memory": memory
     })
 
