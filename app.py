@@ -119,8 +119,8 @@ Return JSON:
                 "created_at": now_iso()
             })
 
-    except:
-        pass
+    except Exception as e:
+        print("MEMORY EXTRACTION ERROR:", e)
 
 
 # ---------------- CONTEXT ----------------
@@ -155,7 +155,8 @@ def build_summary(memory):
 
         return res.choices[0].message.content.strip()
 
-    except:
+    except Exception as e:
+        print("SUMMARY ERROR:", e)
         return ""
 
 
@@ -231,10 +232,13 @@ def generate_tts(text):
 
         styled = shape_for_voice(text)
 
-        audio_bytes = cartesia_client.tts.bytes(
-            model_id="sonic-2",
+        response = cartesia_client.tts.generate(
+            model_id="sonic-3",
             transcript=styled,
-            voice_id=CARTESIA_VOICE_ID,
+            voice={
+                "mode": "id",
+                "id": CARTESIA_VOICE_ID
+            },
             output_format={
                 "container": "wav",
                 "encoding": "pcm_f32le",
@@ -242,9 +246,7 @@ def generate_tts(text):
             },
         )
 
-        with open(filepath, "wb") as f:
-            f.write(audio_bytes)
-
+        response.write_to_file(filepath)
         return filename
 
     except Exception as e:
@@ -263,9 +265,15 @@ def serve_audio(filename):
 
 @app.route("/chat", methods=["POST"])
 def chat():
-    data = request.json
-    user = data.get("user")
-    message = data.get("message")
+    data = request.json or {}
+    user = data.get("user", "unknown_user")
+    message = data.get("message", "").strip()
+
+    if not message:
+        return jsonify({
+            "reply": "I didn't catch that",
+            "audio_url": None
+        }), 400
 
     memory = get_user_memory(user)
 
