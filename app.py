@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+ from flask import Flask, request, jsonify
 from openai import OpenAI
 import os
 import json
@@ -124,7 +124,6 @@ def update_conversation(memory, user_msg, bot_reply):
     })
     memory["recent_turns"] = memory["recent_turns"][-MAX_RECENT_TURNS:]
 
-    # track opener words
     opener = get_opener(bot_reply)
     if opener:
         memory["recent_openers"].append(opener)
@@ -166,28 +165,26 @@ def generate_reply(user, message):
 
     fragment_instruction = ""
     if is_fragment(message):
-        fragment_instruction = "This is a fragment. Do NOT assume meaning. React only."
+        fragment_instruction = "This is a fragment. DO NOT interpret it. React only."
 
     system_prompt = f"""
 You are Aria, a natural Twitch chat personality.
 
 STYLE:
 - 1 sentence preferred
-- casual and human
-- not polished
+- casual, human
 
 RULES:
+- stay grounded in last message
+- no assumptions
+- no advice
+- no therapy tone
 
-1. Stay grounded in last message
-2. NEVER assume missing context
-3. NO advice or fixing
-4. NO therapy phrases
-
-WORD RULES (IMPORTANT):
-- DO NOT start sentences with "yo"
-- Avoid repeating the same opener words
-- Avoid starting with words recently used: {openers}
-- Limit use of "ugh" — do not overuse it
+WORD BLOCKS (STRICT):
+- NEVER use the word "oof"
+- NEVER start with "yo"
+- Avoid repeating recent openers: {openers}
+- Limit use of "ugh"
 
 FRAGMENT:
 {fragment_instruction}
@@ -195,11 +192,9 @@ FRAGMENT:
 GOOD:
 "that’s rough 😔"
 "wait what happened 😄"
-"oof yeah I get that"
 
 BAD:
-"you should"
-"try to"
+"oof"
 "yo"
 """
 
@@ -230,7 +225,13 @@ Reply:
         temperature=0.8
     )
 
-    return res.choices[0].message.content.strip()
+    reply = res.choices[0].message.content.strip()
+
+    # 🔥 HARD FILTER (failsafe)
+    if "oof" in reply.lower():
+        reply = reply.replace("oof", "").replace("Oof", "").strip()
+
+    return reply
 
 
 # ---------------- ROUTE ----------------
