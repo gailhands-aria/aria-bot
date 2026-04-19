@@ -6,6 +6,7 @@ import json
 import re
 from datetime import datetime, timezone
 import uuid
+import random
 
 app = Flask(__name__)
 
@@ -87,11 +88,6 @@ Extract memory ONLY if this is a CLEAR personal fact.
 MESSAGE:
 {message}
 
-RULES:
-- Only store real facts
-- DO NOT guess or infer
-- DO NOT store fragments
-
 Return JSON:
 {{
  "should_store": true/false,
@@ -119,8 +115,8 @@ Return JSON:
                 "created_at": now_iso()
             })
 
-    except Exception as e:
-        print("MEMORY EXTRACTION ERROR:", e)
+    except:
+        pass
 
 
 # ---------------- CONTEXT ----------------
@@ -132,144 +128,73 @@ def update_conversation(memory, user_msg, bot_reply):
     })
     memory["recent_turns"] = memory["recent_turns"][-MAX_RECENT_TURNS:]
 
-    opener = get_opener(bot_reply)
-    if opener:
-        memory["recent_openers"].append(opener)
-        memory["recent_openers"] = memory["recent_openers"][-MAX_RECENT_OPENERS:]
-
 
 def build_summary(memory):
-    turns = memory["recent_turns"][-4:]
-
-    if not turns:
-        return ""
-
-    text = "\n".join([f"user: {t['user']}" for t in turns])
-
-    try:
-        res = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": f"Summarise briefly:\n{text}"}],
-            temperature=0.3
-        )
-
-        return res.choices[0].message.content.strip()
-
-    except Exception as e:
-        print("SUMMARY ERROR:", e)
-        return ""
+    return ""
 
 
 # ---------------- REPLY ----------------
 
 def generate_reply(user, message):
-    memory = get_user_memory(user)
-
-    summary = memory.get("conversation_summary", "")
-    recent = memory.get("recent_turns", [])
-    openers = memory.get("recent_openers", [])
-
-    system_prompt = f"""
-You are Aria, a young, upbeat Twitch chat personality.
+    system_prompt = """
+You are Aria, a young, upbeat, slightly playful Twitch personality.
 
 STYLE:
-- 1 sentence only
-- lively, quick, playful, warm
-- natural, not forced
-- DO NOT use quotation marks
+- 1 sentence
+- warm, natural, slightly flirty/playful
+- light teasing is okay
 - DO NOT use emojis
+- DO NOT use asterisks
 
-VOICE-FRIENDLY DELIVERY:
-- Use speech-friendly interjections only when they feel natural
-- Allowed interjections: aw, heh, hehe, mm, hmm
-- Keep them subtle and occasional
-- Do NOT use stage directions or roleplay actions
-- Never write things like *laughs softly*, *giggles*, *sigh*, or anything in asterisks
-- Do not overdo laugh sounds
-- "aw" should be used instead of "aww"
+TONE:
+- sound happy and alive
+- soft, human, not robotic
+- slightly expressive but not exaggerated
 
 RULES:
-- stay grounded
-- no assumptions
-- no advice
-- do not overtalk
-- avoid sounding robotic
-- never narrate actions
-- avoid repeating openers: {openers}
-
-WORD RULES:
 - no "oof"
 - no "yo"
-"""
-
-    user_prompt = f"""
-User: {user}
-Summary: {summary}
-Recent: {recent}
-Message: {message}
-
-Reply:
 """
 
     res = client.chat.completions.create(
         model="gpt-4o",
         messages=[
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
+            {"role": "user", "content": message}
         ],
-        temperature=0.95
+        temperature=1.0
     )
 
-    reply = res.choices[0].message.content.strip()
-    return reply.strip('"').strip("'")
+    return res.choices[0].message.content.strip()
 
 
-# ---------------- TTS STYLE ----------------
+# ---------------- VOICE SHAPING ----------------
 
 def shape_for_voice(text):
     text = text.strip()
 
-    # remove stage directions completely if they ever slip through
+    # remove any weird formatting
     text = re.sub(r"\*.*?\*", "", text)
 
-    # normalize whitespace
-    text = re.sub(r"\s+", " ", text).strip()
+    # 🎯 make "aw" sound soft and stretched
+    text = re.sub(r"\b[Aa]w+\b", "aawh", text)
 
-    # make speech cues sound more natural in TTS
-    replacements = {
-        "Aww ": "Aw ",
-        "aww ": "aw ",
-        "Aww,": "Aw,",
-        "aww,": "aw,",
-        "Aww.": "Aw.",
-        "aww.": "aw.",
-        "haha": "heh",
-        "Haha": "Heh",
-        "hahaha": "hehe",
-        "Hahaha": "Hehe",
-    }
+    # soften tone
+    text = text.replace("haha", "heh")
+    text = text.replace("Haha", "Heh")
 
-    for old, new in replacements.items():
-        text = text.replace(old, new)
+    # 💕 add soft giggle at end sometimes
+    if random.random() < 0.4:
+        text += " hehe"
 
-    # smooth punctuation for TTS
-    text = text.replace("...", ", ")
-    text = text.replace("—", ", ")
-    text = text.replace("–", ", ")
-
-    # remove full stops for a slightly smoother voice flow
+    # smooth punctuation
     text = text.replace(".", "")
+    text = text.replace("...", ", ")
 
-    # clean again
-    text = re.sub(r"\s+", " ", text).strip()
-
-    if text.endswith("better"):
-        text += " though"
-
-    return text
+    return text.strip()
 
 
-# ---------------- TTS (CARTESIA) ----------------
+# ---------------- TTS ----------------
 
 def generate_tts(text):
     try:
@@ -300,37 +225,20 @@ def generate_tts(text):
         return None
 
 
-# ---------------- AUDIO ROUTE ----------------
+# ---------------- ROUTE ----------------
 
 @app.route("/audio/<filename>")
 def serve_audio(filename):
     return send_from_directory(AUDIO_FOLDER, filename)
 
 
-# ---------------- ROUTE ----------------
-
 @app.route("/chat", methods=["POST"])
 def chat():
     data = request.json or {}
-    user = data.get("user", "unknown_user")
-    message = data.get("message", "").strip()
-
-    if not message:
-        return jsonify({
-            "reply": "I didn't catch that",
-            "audio_url": None
-        }), 400
-
-    memory = get_user_memory(user)
-
-    extract_memory(user, message)
+    user = data.get("user", "gail")
+    message = data.get("message", "")
 
     reply = generate_reply(user, message)
-
-    update_conversation(memory, message, reply)
-
-    memory["conversation_summary"] = build_summary(memory)
-
     audio_file = generate_tts(reply)
 
     audio_url = None
