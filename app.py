@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory
 from openai import OpenAI
 import os
 import json
@@ -241,16 +241,23 @@ def generate_tts(text):
 
         with client.audio.speech.with_streaming_response.create(
             model="gpt-4o-mini-tts",
-            voice="alloy",  # we can upgrade voice later
+            voice="alloy",
             input=text
         ) as response:
             response.stream_to_file(filepath)
 
-        return filepath
+        return filename  # only return filename
 
     except Exception as e:
         print("TTS ERROR:", e)
         return None
+
+
+# ---------------- AUDIO ROUTE ----------------
+
+@app.route("/audio/<filename>")
+def serve_audio(filename):
+    return send_from_directory(AUDIO_FOLDER, filename)
 
 
 # ---------------- ROUTE ----------------
@@ -274,12 +281,15 @@ def chat():
 
     memory["conversation_summary"] = build_summary(memory)
 
-    # 🔊 Generate voice
     audio_file = generate_tts(reply)
+
+    audio_url = None
+    if audio_file:
+        audio_url = f"https://aria-bot-1.onrender.com/audio/{audio_file}"
 
     return jsonify({
         "reply": reply,
-        "audio_file": audio_file,
+        "audio_url": audio_url,
         "memory": memory
     })
 
